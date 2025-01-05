@@ -1,10 +1,11 @@
 from flask import Flask, request, jsonify
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+)
 import json
 import re
 import logging
-from urllib.parse import urlparse, parse_qs
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -16,31 +17,49 @@ def extract_video_id(url):
     """
     Extract video ID from different formats of YouTube URLs
     """
-    # Handle various YouTube URL formats
     if match := re.search(r'(?:v=|/v/|youtu\.be/)([^"&?/\s]{11})', url):
         return match.group(1)
     return None
 
 def get_available_transcript(video_id):
     """
-    Try to get transcript in different languages and with different methods
+    Try to get transcript in English or available languages and translate if needed.
     """
     try:
-        # First attempt: Get English transcript
+        # Attempt to fetch the transcript in English
+        logger.info(f"Trying to fetch English transcript for video ID: {video_id}")
         return YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
     except NoTranscriptFound:
-        # Second attempt: Get transcript in any language and translate to English
+        logger.info(f"English transcript not found. Attempting other languages for video ID: {video_id}")
         try:
+            # Fetch the list of transcripts available for the video
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = transcript_list.find_transcript(['en'])
+            transcript = None
+
+            # Try to find a Hindi transcript
+            try:
+                transcript = transcript_list.find_transcript(['hi'])  # 'hi' is the language code for Hindi
+            except NoTranscriptFound:
+                logger.info("Hindi transcript not found. Trying other available transcripts.")
+
+            # If no Hindi transcript, fallback to other available languages
             if not transcript:
-                # If no English transcript, get the first available and translate
-                transcript = transcript_list.find_transcript(['hi', 'es', 'fr', 'de'])
-                transcript = transcript.translate('en')
-            return transcript.fetch()
+                transcript = transcript_list.find_manually_created_transcript(['es', 'fr', 'de', 'zh', 'ja', 'ar'])
+
+            # Translate the transcript to English if necessary
+            if transcript:
+                if 'en' not in transcript.language_code:
+                    logger.info(f"Translating transcript to English from {transcript.language_code}")
+                    transcript = transcript.translate('en')
+
+                return transcript.fetch()
+
         except Exception as e:
-            logger.error(f"Error getting transcript: {str(e)}")
-            raise
+            logger.error(f"Error fetching transcript in other languages: {str(e)}")
+            raise NoTranscriptFound(f"Transcript not found in any language for video ID {video_id}")
+
+    # If no transcript is found, raise an exception
+    raise NoTranscriptFound(f"No transcript available for video ID {video_id}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -101,4 +120,4 @@ def get_transcript():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
